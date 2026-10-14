@@ -91,4 +91,29 @@ struct DualSenseHidState {
         count = used;
         return true;
     }
+
+    // Only changed button, trigger and hat fields. SDK writes these into a
+    // private report copy; vendor fields, sticks and touch/gyro data are excluded.
+    ULONG ReportChanges(HIDP_DATA* changes, const DualSenseHidLayout& layout,
+        const XINPUT_GAMEPAD& routed) const {
+        auto mapped = state;
+        mapped.ApplyRoutedPad(routed);
+        ULONG count = 0;
+        for (unsigned index = 0; index < layout.fields.size(); ++index) {
+            const auto field = layout.fields[index];
+            HIDP_DATA change{};
+            change.DataIndex = static_cast<USHORT>(index);
+            if (field.kind == DualSenseHidLayout::Kind::Button &&
+                mapped.buttons[field.index] != state.buttons[field.index])
+                change.On = mapped.buttons[field.index] ? TRUE : FALSE;
+            else if (field.kind == DualSenseHidLayout::Kind::Axis &&
+                mapped.axes[field.index] != state.axes[field.index])
+                change.RawValue = static_cast<ULONG>(mapped.axes[field.index]);
+            else if (field.kind == DualSenseHidLayout::Kind::Hat && mapped.hat != state.hat)
+                change.RawValue = static_cast<ULONG>(mapped.hat);
+            else continue;
+            changes[count++] = change;
+        }
+        return count;
+    }
 };

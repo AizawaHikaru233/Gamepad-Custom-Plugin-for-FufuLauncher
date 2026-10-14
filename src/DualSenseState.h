@@ -29,7 +29,7 @@ struct DualSenseState {
         return true;
     }
     static SHORT Stick(int value, bool invert = false) {
-        // Both center bytes are quiet; scale only for activity detection.
+        // Both center bytes are neutral in the shared signed input format.
         const int scaled = value < 127 ? (value - 127) * 32767 / 127 :
             value > 128 ? (value - 128) * 32767 / 127 : 0;
         return static_cast<SHORT>(invert ? -scaled : scaled);

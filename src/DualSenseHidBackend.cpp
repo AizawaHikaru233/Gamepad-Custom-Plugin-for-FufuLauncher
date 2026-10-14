@@ -6,6 +6,7 @@
 #include <memory>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include "MinHook.h"
 #include "DualSenseHidBackend.h"
@@ -20,10 +21,14 @@ namespace {
     using FreePreparsed = decltype(&HidD_FreePreparsedData);
     using GetAttributes = decltype(&HidD_GetAttributes);
     using GetRawInfo = decltype(&GetRawInputDeviceInfoW);
+    using GetRawData = decltype(&GetRawInputData);
+    using SetData = decltype(&HidP_SetData);
     GetData g_OriginalData = nullptr;
     GetPreparsed g_OriginalPreparsed = nullptr;
     FreePreparsed g_OriginalFree = nullptr;
     GetRawInfo g_OriginalRawInfo = nullptr;
+    GetRawData g_OriginalRawData = nullptr;
+    SetData g_SetData = nullptr;
     GetCaps g_GetCaps = nullptr;
     GetButtons g_GetButtons = nullptr;
     GetValues g_GetValues = nullptr;
@@ -37,6 +42,8 @@ namespace {
         std::array<DualSenseHidLayout, 2> reports;
         HANDLE handle = nullptr;
         bool rawInput = false;
+        bool rawObserved = false;
+        std::vector<unsigned char> descriptor;
     };
     std::mutex g_Mutex;
     // Raw Input may copy the same descriptor repeatedly, even to a new buffer.
@@ -44,6 +51,8 @@ namespace {
     std::unordered_map<PHIDP_PREPARSED_DATA, std::shared_ptr<Device>> g_Devices;
     using DeviceCache = std::unordered_map<HANDLE, std::weak_ptr<Device>>;
     DeviceCache g_RawDevices, g_HidDevices;
+    std::unordered_map<HANDLE, std::shared_ptr<Device>> g_RawOwners;
+    std::unordered_set<HANDLE> g_UnsupportedRaw;
     std::atomic<unsigned> g_Traced{0};
     bool g_Attempted = false;
     void Log(const char* text) { if (g_Log) g_Log(text); }
@@ -123,10 +132,11 @@ namespace {
         return found != g_Devices.end() && found->second->handle == handle &&
             found->second->rawInput == rawInput;
     }
-    void RegisterDevice(PHIDP_PREPARSED_DATA preparsed, HANDLE handle, bool rawInput, bool supported) {
+    void RegisterDevice(PHIDP_PREPARSED_DATA preparsed, HANDLE handle, bool rawInput, bool supported, UINT descriptorBytes = 0) {
         if (!preparsed) return;
         std::lock_guard<std::mutex> lock(g_Mutex);
         if (!supported) { ForgetDevice(preparsed); return; }
+        if (rawInput) g_UnsupportedRaw.erase(handle);
         auto& cache = rawInput ? g_RawDevices : g_HidDevices;
         const auto cached = cache.find(handle);
         auto device = cached != cache.end() ? cached->second.lock() : nullptr;
@@ -141,6 +151,10 @@ namespace {
             device->rawInput = rawInput;
             cache[handle] = device;
             LogOnce(1, "DualSense Windows HID capabilities registered; decoded-input adapter ready");
+        }
+        if (rawInput && descriptorBytes && descriptorBytes <= 65536 && device->descriptor.empty()) {
+            const auto bytes = reinterpret_cast<const unsigned char*>(preparsed);
+            device->descriptor.assign(bytes, bytes + descriptorBytes);
         }
         const auto found = g_Devices.find(preparsed);
         if (found != g_Devices.end() && found->second == device) return;
@@ -158,7 +172,7 @@ namespace {
             UINT bytes = sizeof(info);
             const bool supported = g_OriginalRawInfo(handle, RIDI_DEVICEINFO, &info, &bytes) != static_cast<UINT>(-1) &&
                 info.dwType == RIM_TYPEHID && IsDualSense(info.hid.dwVendorId, info.hid.dwProductId);
-            RegisterDevice(preparsed, handle, true, supported);
+            RegisterDevice(preparsed, handle, true, supported, result);
         }
         return result;
     }
@@ -181,19 +195,110 @@ namespace {
         }
         return result;
     }
+
+    // g_Mutex held. Raw Input owns the device handle, not its temporary copied
+    // descriptor buffers. Inspect stale handles only when a new PS5 is observed.
+    std::shared_ptr<Device> RawDevice(HANDLE handle) {
+        const auto owned = g_RawOwners.find(handle);
+        if (owned != g_RawOwners.end()) return owned->second;
+        if (g_UnsupportedRaw.count(handle)) return nullptr;
+        RID_DEVICE_INFO info{}; info.cbSize = sizeof(info);
+        UINT bytes = sizeof(info);
+        if (g_OriginalRawInfo(handle, RIDI_DEVICEINFO, &info, &bytes) == static_cast<UINT>(-1) ||
+            info.dwType != RIM_TYPEHID || !IsDualSense(info.hid.dwVendorId, info.hid.dwProductId)) {
+            g_UnsupportedRaw.insert(handle);
+            return nullptr;
+        }
+        for (auto it = g_RawOwners.begin(); it != g_RawOwners.end();) {
+            RID_DEVICE_INFO current{}; current.cbSize = sizeof(current); bytes = sizeof(current);
+            if (g_OriginalRawInfo(it->first, RIDI_DEVICEINFO, &current, &bytes) != static_cast<UINT>(-1)) {
+                ++it; continue;
+            }
+            auto device = it->second;
+            for (auto alias = g_Devices.begin(); alias != g_Devices.end();) {
+                if (alias->second == device) alias = g_Devices.erase(alias); else ++alias;
+            }
+            g_RawDevices.erase(it->first);
+            if (g_Disconnect) g_Disconnect(device.get());
+            it = g_RawOwners.erase(it);
+        }
+        const auto cached = g_RawDevices.find(handle);
+        auto device = cached != g_RawDevices.end() ? cached->second.lock() : nullptr;
+        if (!device || device->descriptor.empty()) {
+            bytes = 0;
+            if (g_OriginalRawInfo(handle, RIDI_PREPARSEDDATA, nullptr, &bytes) == static_cast<UINT>(-1) ||
+                !bytes || bytes > 65536) return nullptr;
+            std::vector<unsigned char> descriptor(bytes);
+            if (g_OriginalRawInfo(handle, RIDI_PREPARSEDDATA, descriptor.data(), &bytes) == static_cast<UINT>(-1))
+                return nullptr;
+            auto candidate = std::make_shared<Device>();
+            if (!BuildDevice(reinterpret_cast<PHIDP_PREPARSED_DATA>(descriptor.data()), *candidate)) return nullptr;
+            if (!device) device = candidate;
+            device->descriptor = std::move(descriptor);
+            device->handle = handle; device->rawInput = true;
+            g_RawDevices[handle] = device;
+        }
+        g_RawOwners[handle] = device;
+        return device;
+    }
+
+    UINT WINAPI HookRawData(HRAWINPUT input, UINT command, LPVOID data, PUINT size, UINT headerSize) {
+        const UINT result = g_OriginalRawData(input, command, data, size, headerSize);
+        constexpr UINT payloadOffset = offsetof(RAWINPUT, data.hid.bRawData);
+        if (command != RID_INPUT || result == static_cast<UINT>(-1) || !data || result < payloadOffset ||
+            headerSize != sizeof(RAWINPUTHEADER)) return result;
+        auto& raw = *static_cast<RAWINPUT*>(data);
+        if (raw.header.dwType != RIM_TYPEHID || raw.header.dwSize > result ||
+            raw.header.dwSize < payloadOffset || raw.data.hid.dwSizeHid != 64 || !raw.data.hid.dwCount ||
+            raw.data.hid.dwCount > (raw.header.dwSize - payloadOffset) / raw.data.hid.dwSizeHid) return result;
+        std::lock_guard<std::mutex> lock(g_Mutex);
+        const auto device = RawDevice(raw.header.hDevice);
+        if (!device || device->descriptor.empty() || !device->reports[0].Ready()) return result;
+        const auto preparsed = reinterpret_cast<PHIDP_PREPARSED_DATA>(device->descriptor.data());
+        for (DWORD i = 0; i < raw.data.hid.dwCount; ++i) {
+            auto report = reinterpret_cast<char*>(raw.data.hid.bRawData + 64 * i);
+            if (static_cast<UCHAR>(report[0]) != 1) continue; // USB only; no Bluetooth CRC rewriting.
+            std::array<HIDP_DATA, DualSenseHidState::MaximumData> decoded{};
+            ULONG count = static_cast<ULONG>(decoded.size());
+            if (g_OriginalData(HidP_Input, decoded.data(), &count, preparsed, report, 64) != HIDP_STATUS_SUCCESS)
+                continue;
+            DualSenseHidState snapshot;
+            if (!snapshot.Read(decoded.data(), count, device->reports[0])) continue;
+            device->rawObserved = true;
+            if (g_Observed) g_Observed();
+            LogOnce(32, "Game reads PS5 USB Raw Input; remapping the game-owned report copy");
+            if (!g_Wanted || !g_Wanted()) continue;
+            auto pad = snapshot.state.ToGamepad();
+            if (!g_Process || !g_Process(device.get(), pad)) continue;
+            std::array<HIDP_DATA, DualSenseHidState::MaximumData> changes{};
+            ULONG changed = snapshot.ReportChanges(changes.data(), device->reports[0], pad);
+            if (!changed) continue;
+            std::array<char, 64> mapped;
+            std::memcpy(mapped.data(), report, mapped.size());
+            if (g_SetData(HidP_Input, changes.data(), &changed, preparsed, mapped.data(),
+                static_cast<ULONG>(mapped.size())) == HIDP_STATUS_SUCCESS) {
+                std::memcpy(report, mapped.data(), mapped.size());
+                LogOnce(64, "PS5 USB raw-copy carrier applied; decoded-data routing disabled for this device");
+            } else LogOnce(128, "PS5 USB raw-copy field rewrite unavailable; copied report unchanged");
+        }
+        return result;
+    }
     NTSTATUS WINAPI HookData(HIDP_REPORT_TYPE type, PHIDP_DATA data, PULONG count,
         PHIDP_PREPARSED_DATA preparsed, PCHAR report, ULONG reportLength) {
         const ULONG capacity = count ? *count : 0;
         const NTSTATUS result = g_OriginalData(type, data, count, preparsed, report, reportLength);
-        if (result != HIDP_STATUS_SUCCESS || type != HidP_Input || !data || !count || !report || !reportLength ||
-            !g_Wanted || !g_Wanted()) return result;
+        if (result != HIDP_STATUS_SUCCESS || type != HidP_Input || !data || !count || !report || !reportLength)
+            return result;
         const int slot = ReportSlot(static_cast<UCHAR>(report[0]));
         if (slot < 0) return result;
         std::lock_guard<std::mutex> lock(g_Mutex);
         const auto found = g_Devices.find(preparsed);
         if (found == g_Devices.end()) return result;
         auto& device = *found->second;
+        // Sensitivity initialization also needs to observe input with map routing disabled.
         if (g_Observed) g_Observed();
+        if (device.rawObserved) return result; // The same report must not reset or re-arm its raw-layer routing state.
+        if (!g_Wanted || !g_Wanted()) return result;
         DualSenseHidState snapshot;
         if (!snapshot.Read(data, *count, device.reports[slot])) {
             LogOnce(4, "DualSense Windows HID decoded state incomplete; input unchanged");
@@ -222,18 +327,21 @@ void DualSenseHidBackend::Install() {
     g_GetButtons = reinterpret_cast<GetButtons>(GetProcAddress(hid, "HidP_GetButtonCaps"));
     g_GetValues = reinterpret_cast<GetValues>(GetProcAddress(hid, "HidP_GetValueCaps"));
     g_GetAttributes = reinterpret_cast<GetAttributes>(GetProcAddress(hid, "HidD_GetAttributes"));
+    g_SetData = reinterpret_cast<SetData>(GetProcAddress(hid, "HidP_SetData"));
     void* targets[] = {
         reinterpret_cast<void*>(GetProcAddress(user, "GetRawInputDeviceInfoW")),
         reinterpret_cast<void*>(GetProcAddress(hid, "HidD_GetPreparsedData")),
         reinterpret_cast<void*>(GetProcAddress(hid, "HidD_FreePreparsedData")),
-        reinterpret_cast<void*>(GetProcAddress(hid, "HidP_GetData"))
+        reinterpret_cast<void*>(GetProcAddress(hid, "HidP_GetData")),
+        reinterpret_cast<void*>(GetProcAddress(user, "GetRawInputData"))
     };
     void* detours[] = {reinterpret_cast<void*>(&HookRawInfo), reinterpret_cast<void*>(&HookPreparsed),
-        reinterpret_cast<void*>(&HookFree), reinterpret_cast<void*>(&HookData)};
+        reinterpret_cast<void*>(&HookFree), reinterpret_cast<void*>(&HookData), reinterpret_cast<void*>(&HookRawData)};
     void** originals[] = {reinterpret_cast<void**>(&g_OriginalRawInfo), reinterpret_cast<void**>(&g_OriginalPreparsed),
-        reinterpret_cast<void**>(&g_OriginalFree), reinterpret_cast<void**>(&g_OriginalData)};
+        reinterpret_cast<void**>(&g_OriginalFree), reinterpret_cast<void**>(&g_OriginalData),
+        reinterpret_cast<void**>(&g_OriginalRawData)};
     unsigned created = 0;
-    bool ready = g_GetCaps && g_GetButtons && g_GetValues && g_GetAttributes;
+    bool ready = g_GetCaps && g_GetButtons && g_GetValues && g_GetAttributes && g_SetData;
     for (unsigned i = 0; ready && i < ARRAYSIZE(targets); ++i) {
         ready = targets[i] && MH_CreateHook(targets[i], detours[i], originals[i]) == MH_OK;
         if (ready) ++created;
@@ -244,5 +352,5 @@ void DualSenseHidBackend::Install() {
         Log("DualSense Windows HID hooks unavailable; existing input backends retained");
         return;
     }
-    Log("DualSense Windows HID hooks installed; PS5 only, raw reports unchanged");
+    Log("DualSense Windows HID hooks installed; PS5 USB remaps game-owned input copies");
 }

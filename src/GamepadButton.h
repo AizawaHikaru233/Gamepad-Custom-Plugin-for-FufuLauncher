@@ -61,15 +61,16 @@ public:
         if (trigger_ == 2) return pad.bRightTrigger > XINPUT_GAMEPAD_TRIGGER_THRESHOLD;
         return mask_ && (pad.wButtons & mask_) != 0;
     }
-    bool CanStart(const XINPUT_GAMEPAD& pad) const {
-        // Another physical View hold cannot generate a new carrier edge.
-        return mask_ == XINPUT_GAMEPAD_BACK || !(pad.wButtons & XINPUT_GAMEPAD_BACK);
+    bool CanStart(const XINPUT_GAMEPAD& pad, WORD carrier = XINPUT_GAMEPAD_BACK) const {
+        // Xbox chat uses View; PS5 chat uses Touchpad. A different physical
+        // hold of that carrier cannot generate a new native chat press edge.
+        return mask_ == carrier || !(pad.wButtons & carrier);
     }
-    void EmitCarrier(XINPUT_GAMEPAD& pad) const {
+    void EmitCarrier(XINPUT_GAMEPAD& pad, WORD carrier = XINPUT_GAMEPAD_BACK) const {
         pad.wButtons &= static_cast<WORD>(~mask_);
         if (trigger_ == 1) pad.bLeftTrigger = 0;
         if (trigger_ == 2) pad.bRightTrigger = 0;
-        pad.wButtons |= XINPUT_GAMEPAD_BACK;
+        pad.wButtons |= carrier;
     }
 private:
     GamepadButton(WORD mask, unsigned trigger) : mask_(mask), trigger_(trigger) {}
