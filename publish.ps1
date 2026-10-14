@@ -15,14 +15,14 @@ $version = $versionMatch.Groups[1].Value
 $releasePath = Join-Path $PSScriptRoot "bin\publish\$version"
 New-Item -ItemType Directory -Path $releasePath -Force | Out-Null
 $packageFiles = @()
-foreach ($name in @('XboxGamepadPlugin.dll','config.ini','README.md','LICENSE','THIRD_PARTY_NOTICES.md')) {
-    $sourcePath = if ($name -eq 'XboxGamepadPlugin.dll') {
+foreach ($name in @('GamepadCustomPlugin.dll','config.ini')) {
+    $sourcePath = if ($name -eq 'GamepadCustomPlugin.dll') {
         Join-Path $PSScriptRoot "bin\x64\Release\$name"
     } else { Join-Path $PSScriptRoot $name }
     $destinationPath = Join-Path $releasePath $name
     Copy-Item -LiteralPath $sourcePath -Destination $destinationPath -Force
     $packageFiles += $destinationPath
 }
-$zipPath = Join-Path (Split-Path $releasePath -Parent) "XboxGamepadPlugin-$version.zip"
+$zipPath = Join-Path (Split-Path $releasePath -Parent) "GamepadCustomPlugin-$version.zip"
 Compress-Archive -LiteralPath $packageFiles -DestinationPath $zipPath -Force
 Get-Item -LiteralPath $zipPath

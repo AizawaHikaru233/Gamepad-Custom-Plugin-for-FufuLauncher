@@ -22,6 +22,6 @@ foreach ($dependency in @('Patterns\Patterns.h', 'MinHook\MinHook.h', 'MinHook\l
         throw "Required build dependency not found: $dependencyPath"
     }
 }
-& $MSBuildPath (Join-Path $PSScriptRoot 'XboxGamepadPlugin.vcxproj') /m /t:Build /p:Configuration=Release /p:Platform=x64 "/p:UnlockerIslandRoot=$UnlockerIslandRoot" /v:minimal /nologo
+& $MSBuildPath (Join-Path $PSScriptRoot 'GamepadCustomPlugin.vcxproj') /m /t:Build /p:Configuration=Release /p:Platform=x64 "/p:UnlockerIslandRoot=$UnlockerIslandRoot" /v:minimal /nologo
 if ($LASTEXITCODE -ne 0) { throw "Plugin build failed: $LASTEXITCODE" }
-Get-Item -LiteralPath (Join-Path $PSScriptRoot 'bin\x64\Release\XboxGamepadPlugin.dll')
+Get-Item -LiteralPath (Join-Path $PSScriptRoot 'bin\x64\Release\GamepadCustomPlugin.dll')

@@ -6,6 +6,7 @@
   <PropertyGroup Label="Globals">
     <ProjectGuid>{56F34DD4-ED18-42BE-BB1C-00A3FD32D80D}</ProjectGuid>
     <Keyword>Win32Proj</Keyword>
+    <RootNamespace>GamepadCustomPlugin</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
@@ -20,7 +21,7 @@
     <UnlockerIslandRoot Condition="'$(UnlockerIslandRoot)'==''">$(MSBuildProjectDirectory)\..\FufuLauncher.UnlockerIsland</UnlockerIslandRoot>
     <OutDir>$(MSBuildProjectDirectory)\bin\$(Platform)\$(Configuration)\</OutDir>
     <IntDir>$(MSBuildProjectDirectory)\obj\$(Platform)\$(Configuration)\</IntDir>
-    <TargetName>XboxGamepadPlugin</TargetName>
+    <TargetName>GamepadCustomPlugin</TargetName>
   </PropertyGroup>
   <ItemDefinitionGroup>
     <ClCompile>
@@ -50,6 +51,9 @@
     <ClCompile Include="src\HotSwitch.cpp" />
     <ClCompile Include="src\Sensitivity.cpp" />
     <ClCompile Include="src\LiveConfig.cpp" />
+    <ClCompile Include="src\DualSenseBackend.cpp" />
+    <ClCompile Include="src\DualSenseHidBackend.cpp" />
+    <ClCompile Include="src\XInputBackend.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\ButtonRouter.h" />
@@ -60,6 +64,12 @@
     <ClInclude Include="src\GamepadButton.h" />
     <ClInclude Include="src\HotSwitch.h" />
     <ClInclude Include="src\DeviceActivity.h" />
+    <ClInclude Include="src\InputSwitchGuard.h" />
+    <ClInclude Include="src\DualSenseBackend.h" />
+    <ClInclude Include="src\DualSenseHidBackend.h" />
+    <ClInclude Include="src\DualSenseHidState.h" />
+    <ClInclude Include="src\XInputBackend.h" />
+    <ClInclude Include="src\DualSenseState.h" />
     <ClInclude Include="src\Sensitivity.h" />
     <ClInclude Include="src\SensitivityFactor.h" />
     <ClInclude Include="src\LiveConfig.h" />

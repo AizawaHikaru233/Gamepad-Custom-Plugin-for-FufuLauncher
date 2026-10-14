@@ -19,6 +19,7 @@
 #include "GamepadButton.h"
 #include "HotSwitch.h"
 #include "Sensitivity.h"
+#include "DualSenseBackend.h"
 
 namespace {
     // Same native signatures/calling convention used by the existing plugin.
@@ -360,6 +361,7 @@ void NativePages::Prepare() {
     Log(text);
     if (g_HotSwitch) HotSwitch::Prepare(FindNative);
     if (g_Sensitivity) Sensitivity::Prepare(FindNative);
+    DualSenseBackend::Prepare(FindNative);
     g_Prepared.store(true, std::memory_order_release);
 }
 
@@ -371,8 +373,12 @@ bool NativePages::RequestActivation() {
 
 void NativePages::Install() {
     if (!g_MapBinding && !g_Diagnostics && !g_HotSwitch && !g_Sensitivity) return;
-    if (!g_Prepared.load(std::memory_order_acquire) ||
-        !MainHooksActive()) return;
+    if (!g_Prepared.load(std::memory_order_acquire)) return;
+    // This specific HID parser is outside the main plugin's hook targets. Its
+    // observation wakes setup on a Sony-only system once main hooks are active;
+    // routing still requires the native page hook to be ready.
+    DualSenseBackend::Install();
+    if (!MainHooksActive()) return;
     // A neutral startup coefficient needs no sensitivity hook. The first live
     // non-neutral value resolves/installs it once, after the main plugin is ready.
     if (g_Sensitivity) { Sensitivity::Prepare(FindNative); Sensitivity::Install(); }
@@ -420,7 +426,10 @@ bool NativePages::RequestMap(bool enabled) {
         for (auto& seen : g_SeenActions) seen.store(0, std::memory_order_relaxed);
         g_TraceActive.store(true, std::memory_order_release);
     }
-    if (!enabled || !g_MapBinding) return false;
+    if (!enabled || !g_MapBinding) {
+        if (g_Diagnostics) Log("Map button observed, but binding is disabled or native map branch unavailable");
+        return false;
+    }
     g_MapRequest.Arm(GetTickCount64());
     if (g_Diagnostics) Log("Map request armed; waiting for native chat action (500 ms)");
     return true;

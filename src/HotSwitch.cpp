@@ -4,10 +4,11 @@
 #include <commctrl.h>
 #include <atomic>
 #include <cstdio>
-#include <cstring>
+#include <cwchar>
 #include "MinHook.h"
 #include "HotSwitch.h"
 #include "DeviceActivity.h"
+#include "InputSwitchGuard.h"
 
 namespace {
     // Current native input-manager UI update. Its original finishes walking
@@ -19,72 +20,57 @@ namespace {
         "48 89 F1 E8 ? ? ? ? 48 85 C0 74 ? 83 BE ? ? ? ? 00 75 ? "
         "8B 86 ? ? ? ? 83 F8 23 74 ? 83 F8 0B 75 ? B9 1B 00 00 00 E8 ? ? ? ? "
         "84 C0 74 ? 48 8B 05 ? ? ? ? 48 8B B8 ? ? ? ? 48 85 FF";
-    constexpr const char* UiModeSignature =
-        "55 56 57 53 48 83 EC 58 48 8D 6C 24 50 48 C7 45 F8 FE FF FF FF "
-        "44 89 C3 41 89 D0 48 89 CE 80 3D ? ? ? ? 00 0F 85 ? ? ? ? "
-        "44 39 86 ? ? ? ? 0F 84 ? ? ? ? 44 89 86 ? ? ? ? 48 89 F1 E8 ? ? ? ?";
-    constexpr const char* InputModeSignature =
-        "56 57 53 48 83 EC 70 44 89 C3 89 D7 48 89 CE 80 3D ? ? ? ? 00 "
-        "0F 85 ? ? ? ? 8B 86 ? ? ? ? 39 F8 75 08 48 83 C4 70 5B 5F 5E C3";
-    constexpr const char* CursorSignature =
-        "48 83 EC 28 48 89 CA 80 3D ? ? ? ? 00 0F 85 ? ? ? ? "
-        "8B 82 ? ? ? ? 85 C0 74 ? 83 F8 03 74 ? 83 F8 02 75 ? "
-        "48 8B 05 ? ? ? ? 48 8B 88 ? ? ? ? 48 85 C9";
-    // The native settings-page keyboard switch. Only decode its shared
-    // callees/metadata; never invoke the wrapper with a fabricated receiver.
-    // Its settings child distinguishes it from the second native wrapper.
-    constexpr const char* SwitchSequenceSignature =
-        "48 8B 15 ? ? ? ? E8 ? ? ? ? 48 89 C7 48 8B 05 ? ? ? ? "
-        "48 8B 88 ? ? ? ? 48 85 C9 0F 84 ? ? ? ? BA 01 00 00 00 41 B0 01 E8 ? ? ? ? "
-        "48 8B 05 ? ? ? ? 48 8B 88 ? ? ? ? 48 85 C9 0F 84 ? ? ? ? "
-        "BA 02 00 00 00 45 31 C0 E8 ? ? ? ? 48 85 FF 74 ? "
-        "48 8B 05 ? ? ? ? 48 8B 88 ? ? ? ? 48 85 C9 0F 84 ? ? ? ? E8 ? ? ? ? "
-        "80 3D ? ? ? ? 00 0F 85 ? ? ? ? 48 89 F9 89 C2 E8 ? ? ? ? "
-        "48 8B 05 ? ? ? ? 48 8B 88 ? ? ? ? 48 85 C9 0F 84 ? ? ? ? E8 ? ? ? ? "
-        "48 8B 8E 98 04 00 00 48 85 C9";
-    // Native UI-manager device transition, including registered child pages.
-    // These are shared functions, not a settings-page wrapper or a page reopen.
-    constexpr const char* BeginMenusSignature =
-        "41 57 41 56 41 55 41 54 56 57 55 53 48 83 EC 38 45 89 C4 41 89 D5 48 89 CE "
-        "80 3D ? ? ? ? 00 0F 84 ? ? ? ? 80 3D ? ? ? ? 00 0F 85 ? ? ? ? "
-        "48 8B 8E ? ? ? ? 48 85 C9 0F 84 ? ? ? ? 48 8B 15 ? ? ? ? E8 ? ? ? ? "
-        "48 85 C0 0F 84 ? ? ? ? 48 89 C7 8B 58 18 FF CB";
-    constexpr const char* FinishMenusSignature =
-        "41 57 41 56 41 55 41 54 56 57 55 53 48 83 EC 28 45 89 C4 41 89 D5 48 89 CB "
-        "80 3D ? ? ? ? 00 0F 84 ? ? ? ? 80 3D ? ? ? ? 00 0F 85 ? ? ? ? "
-        "48 8B 8B ? ? ? ? 48 85 C9 0F 84 ? ? ? ? 48 8B 15 ? ? ? ? E8 ? ? ? ? "
-        "48 85 C0 0F 84 ? ? ? ? 48 89 C6 48 8B 40 18 85 C0";
+    // Whole native transaction: page eligibility, preparation, device/layout
+    // changes, focus/cursor, menu completion and final device-change event.
+    // Unlike a settings-page wrapper, its receiver is the real input manager.
+    constexpr const char* SwitchDeviceSignature =
+        "55 41 56 56 57 53 48 81 EC C0 00 00 00 48 8D AC 24 80 00 00 00 "
+        "0F 29 75 30 48 C7 45 20 FE FF FF FF 45 89 C6 89 D3 48 89 CF "
+        "80 3D ? ? ? ? 00 0F 84 ? ? ? ? 80 3D ? ? ? ? 00 "
+        "48 8B 05 ? ? ? ? 0F 85 ? ? ? ? 48 8B 88 ? ? ? ? "
+        "48 85 C9 0F 84 ? ? ? ? E8 ? ? ? ? 84 C0";
+    // Decode native scene/blocking/deadline checks, without reading or changing
+    // the saved main-page enableInputHotSwap preference.
+    constexpr const char* EligibilitySignature =
+        "56 48 83 EC 30 0F 29 74 24 20 48 89 CE 80 3D ? ? ? ? 00 "
+        "0F 85 ? ? ? ? 80 3D ? ? ? ? 00 0F 85 ? ? ? ? "
+        "80 BE ? ? ? ? 00 0F 84 ? ? ? ? 48 8B 0D ? ? ? ? "
+        "80 B9 C7 00 00 00 00 0F 84 ? ? ? ? B9 ? ? ? ? E8 ? ? ? ? "
+        "84 C0 0F 85 ? ? ? ? 48 8B 05 ? ? ? ? 48 8B 88 ? ? ? ? "
+        "48 85 C9 0F 84 ? ? ? ? E8 ? ? ? ? 48 85 C0 0F 84 ? ? ? ? "
+        "80 B8 ? ? ? ? 00 0F 84 ? ? ? ? 48 8B 05 ? ? ? ? "
+        "48 83 B8 ? ? ? ? 00 0F 84 ? ? ? ? F3 0F 10 B6 ? ? ? ? "
+        "E8 ? ? ? ? 0F 2E F0 0F 96 C0";
     using Update = void (WINAPI*)(void*, void*);
-    using SetMode = void (WINAPI*)(void*, int, bool, void*);
-    using GetPage = void* (WINAPI*)(void*, void*);
-    using GetKind = int (WINAPI*)(void*, void*);
-    using RefreshHud = void (WINAPI*)(void*, int, void*);
-    using TransitionMenus = void (WINAPI*)(void*, int, int, void*);
-    Update g_OriginalUpdate = nullptr, g_Cursor = nullptr;
-    SetMode g_SetUiMode = nullptr, g_SetInputMode = nullptr;
-    GetPage g_GetHud = nullptr;
-    GetKind g_GetUiKind = nullptr;
-    RefreshHud g_RefreshHud = nullptr;
-    TransitionMenus g_BeginMenus = nullptr, g_FinishMenus = nullptr;
-    void** g_HudMethodSlot = nullptr;
+    using SwitchDevice = bool (WINAPI*)(void*, int, int, void*);
+    using NativeTime = float (WINAPI*)();
+    using BlockingState = bool (WINAPI*)(int, void*);
+    enum class SwitchResult { Applied, Rejected, Failed };
+    Update g_OriginalUpdate = nullptr;
+    SwitchDevice g_SwitchDevice = nullptr;
+    SwitchDevice g_OriginalSwitchDevice = nullptr;
+    NativeTime g_NativeTime = nullptr;
+    BlockingState g_BlockingState = nullptr;
     void* g_UpdateEntry = nullptr;
     void** g_ManagerSlot = nullptr;
-    unsigned g_UiManagerOffset = 0;
-    unsigned g_InputModeOffset = 0, g_UiModeOffset = 0;
-    unsigned g_UiKindOffset = 0, g_PagesOffset = 0, g_PageRefreshOffset = 0, g_ReferenceOffset = 0;
-    unsigned g_PageReadyOffset = 0, g_PageDirtyOffset = 0, g_PageModeStateOffset = 0;
-    unsigned g_PreviousUiOffset = 0, g_PreviousInputOffset = 0, g_TargetUiOffset = 0, g_TargetInputOffset = 0;
+    unsigned g_UiManagerOffset = 0, g_InputManagerOffset = 0;
+    unsigned g_InputModeOffset = 0, g_UiModeOffset = 0, g_InputBlockedOffset = 0;
+    unsigned g_InputSceneGateOffset = 0, g_SwitchDeadlineOffset = 0;
+    int g_BlockingReason = 0;
     HotSwitch::Logger g_Log = nullptr;
     bool g_Diagnostics = false;
-    unsigned g_LayoutTraces = 0;
+    unsigned g_RejectionTraces = 0;
+    unsigned g_DeferralTraces = 0;
     std::atomic<bool> g_Enabled{ false }, g_Ready{ false };
     bool g_Prepared = false, g_InstallAttempted = false;
     DeviceActivity g_Activity;
-    GamepadActivity g_Pads;
+    InputSwitchGuard g_SwitchGuard;
+    GamepadActivity g_XInputPads;
     HWND g_Window = nullptr;
-    bool g_WindowAttempted = false, g_MouseSeen = false, g_FirstTick = true;
+    bool g_WindowAttempted = false, g_MouseSeen = false, g_RawMouseSeen = false, g_FirstTick = true;
     LPARAM g_MousePosition = 0;
-    ULONGLONG g_IgnoreMouseUntil = 0, g_LastSwitchTime = 0;
+    ULONGLONG g_IgnoreMouseUntil = 0;
+    std::atomic<ULONGLONG> g_LastAttemptTime{ 0 };
     std::uint64_t g_Handled = 0;
     thread_local bool g_Updating = false;
 
@@ -111,15 +97,34 @@ namespace {
                 break;
             case WM_SETFOCUS:
                 g_Activity.Clear();
+                g_MouseSeen = false;
+                g_RawMouseSeen = false;
                 g_IgnoreMouseUntil = now + 500;
                 break;
+            case WM_INPUT: {
+                // Observe the game's registration; never register/replace a
+                // raw-input target from this DLL. Continue the original message
+                // chain so the game reads the packet and performs cleanup.
+                RAWINPUT raw{};
+                UINT size = sizeof(raw);
+                if (GET_RAWINPUT_CODE_WPARAM(key) == RIM_INPUT && Focused() &&
+                    GetRawInputData(reinterpret_cast<HRAWINPUT>(detail), RID_INPUT,
+                        &raw, &size, sizeof(RAWINPUTHEADER)) == sizeof(raw) &&
+                    raw.header.dwType == RIM_TYPEMOUSE) {
+                    if (!(raw.data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE)) g_RawMouseSeen = true;
+                    if (IsRawMouseActivity(raw.data.mouse))
+                        g_Activity.Notify(InputSource::Mouse, now);
+                }
+                break;
+            }
             case WM_KEYDOWN:
             case WM_SYSKEYDOWN:
                 if (!(detail & (1LL << 30)) && Focused())
                     g_Activity.Notify(InputSource::Keyboard, now);
                 break;
             case WM_MOUSEMOVE:
-                if (g_MouseSeen && detail != g_MousePosition && now >= g_IgnoreMouseUntil && Focused())
+                if (!g_RawMouseSeen && g_MouseSeen && detail != g_MousePosition &&
+                    now >= g_IgnoreMouseUntil && Focused())
                     g_Activity.Notify(InputSource::Mouse, now);
                 g_MouseSeen = true;
                 g_MousePosition = detail;
@@ -164,10 +169,14 @@ namespace {
         Log("Hot switch window input monitor installed on game UI thread");
         return true;
     }
-    bool ReadManagers(void* instance, void*& ui, int& inputMode, int& uiMode) {
+    bool ReadManagers(void* instance, void*& ui, int& inputMode, int& uiMode, bool requireActive = false) {
         __try {
             const auto root = static_cast<unsigned char*>(*g_ManagerSlot);
-            if (!root || !instance) return false;
+            if (!root || !instance || *reinterpret_cast<void**>(root + g_InputManagerOffset) != instance) return false;
+            // The native UI update itself returns immediately when this flag
+            // is set. Its post-update hook must honor the same input pause.
+            if (requireActive && (*(static_cast<unsigned char*>(instance) + g_InputBlockedOffset) ||
+                !*(static_cast<unsigned char*>(instance) + g_InputSceneGateOffset))) return false;
             ui = *reinterpret_cast<void**>(root + g_UiManagerOffset);
             if (!ui) return false;
             inputMode = *reinterpret_cast<int*>(static_cast<unsigned char*>(instance) + g_InputModeOffset);
@@ -176,97 +185,76 @@ namespace {
         }
         __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
     }
-    void TraceLayout(void* ui, bool hadHud) {
-        // Read only the native open-page collection on the first eight device
-        // changes. No timer, scene search or object-name lookup.
-        if (!g_Diagnostics || g_LayoutTraces >= 8) return;
-        ++g_LayoutTraces;
-        __try {
-            const auto bytes = static_cast<const unsigned char*>(ui);
-            const auto reference = reinterpret_cast<const float*>(bytes + g_ReferenceOffset);
-            const auto pages = *reinterpret_cast<const unsigned char* const*>(bytes + g_PagesOffset);
-            const int count = pages ? *reinterpret_cast<const int*>(pages + 0x20) : 0;
-            char text[4096]{};
-            const int written = sprintf_s(text, "Hot switch layout: HUD refreshed=%u; kind=%d; reference=%.0fx%.0f; open pages=%d",
-                hadHud ? 1u : 0u, *reinterpret_cast<const int*>(bytes + g_UiKindOffset),
-                static_cast<double>(reference[0]), static_cast<double>(reference[1]), count);
-            if (written < 0) return;
-            if (count < 0 || count > 32) { Log(text); return; }
-            const auto array = pages ? *reinterpret_cast<const unsigned char* const*>(pages + 0x10) : nullptr;
-            if (!array || *reinterpret_cast<const std::size_t*>(array + 0x18) < static_cast<unsigned>(count)) { Log(text); return; }
+    int ReportException(EXCEPTION_POINTERS* exception) {
+        char text[768]{};
+        int written = sprintf_s(text, "Hot switch native exception; code=0x%08lX; address=%p",
+            exception->ExceptionRecord->ExceptionCode, exception->ExceptionRecord->ExceptionAddress);
+        // Capture a bounded stack before SEH unwinds the failed native call.
+        // Diagnostic only, once on failure; never inspect pages or retry it.
+        if (g_Diagnostics && written > 0) {
             const auto base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
+            const auto dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+            const auto nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
+            void* frames[16]{};
+            const auto count = CaptureStackBackTrace(0, ARRAYSIZE(frames), frames, nullptr);
             std::size_t used = static_cast<std::size_t>(written);
-            for (int index = count - 1; index >= 0; --index) {
-                const auto page = *reinterpret_cast<const unsigned char* const*>(array + 0x20 + index * sizeof(void*));
-                if (!page) continue;
-                const auto klass = *reinterpret_cast<const unsigned char* const*>(page);
-                if (!klass) continue;
-                const auto callback = *reinterpret_cast<const std::uintptr_t*>(klass + g_PageRefreshOffset);
-                const auto state = *reinterpret_cast<const unsigned char* const*>(page + g_PageModeStateOffset);
-                if (used + 128 >= sizeof(text)) break;
-                const int appended = sprintf_s(text + used, sizeof(text) - used,
-                    "; page[%d] callback=0x%llX ready=%d dirty=%u previous=%d/%d target=%d/%d", index,
-                    static_cast<unsigned long long>(callback >= base ? callback - base : 0),
-                    *reinterpret_cast<const int*>(page + g_PageReadyOffset), static_cast<unsigned>(page[g_PageDirtyOffset]),
-                    state ? *reinterpret_cast<const int*>(state + g_PreviousUiOffset) : -1,
-                    state ? *reinterpret_cast<const int*>(state + g_PreviousInputOffset) : -1,
-                    state ? *reinterpret_cast<const int*>(state + g_TargetUiOffset) : -1,
-                    state ? *reinterpret_cast<const int*>(state + g_TargetInputOffset) : -1);
-                if (appended < 0) break;
-                used += static_cast<std::size_t>(appended);
+            for (unsigned index = 0; index < count && used + 48 < sizeof(text); ++index) {
+                const auto address = reinterpret_cast<std::uintptr_t>(frames[index]);
+                const bool game = address >= base && address - base < nt->OptionalHeader.SizeOfImage;
+                written = sprintf_s(text + used, sizeof(text) - used, "; %s0x%llX",
+                    game ? "game+" : "", static_cast<unsigned long long>(game ? address - base : address));
+                if (written < 0) break;
+                used += static_cast<std::size_t>(written);
             }
-            Log(text); // One file write per captured device change, not per page.
         }
-        __except (EXCEPTION_EXECUTE_HANDLER) { Log("Hot switch layout trace unavailable; no retry/search"); }
+        Log(text);
+        return EXCEPTION_EXECUTE_HANDLER;
     }
-    bool Apply(void* instance, void* ui, int mode, bool& hadHud) {
-        const char* stage = "HUD lookup";
+    bool WINAPI HookSwitchDevice(void* instance, int layout, int device, void* methodInfo) {
+        g_SwitchGuard.Begin();
+        bool result = false;
         __try {
-            // Match the native switch order. It captures the HUD before changing
-            // modes and refreshes its layout/button group afterwards explicitly.
-            // The UI setter's generic page notification does not replace this.
-            if (!*g_HudMethodSlot) { Log("Hot switch native HUD MethodInfo unavailable; switch skipped"); return false; }
-            void* hud = g_GetHud(ui, *g_HudMethodSlot);
+            result = g_OriginalSwitchDevice(instance, layout, device, methodInfo);
+            // The game's own automatic switch also starts our debounce period.
+            if (result) g_LastAttemptTime.store(GetTickCount64(), std::memory_order_relaxed);
+        }
+        __finally { g_SwitchGuard.End(); }
+        return result;
+    }
+    bool CanSwitchNow(void* instance, int inputMode, int uiMode) {
+        __try {
+            const auto notBefore = *reinterpret_cast<const float*>(
+                static_cast<const unsigned char*>(instance) + g_SwitchDeadlineOffset);
+            return g_SwitchGuard.CanStart(inputMode, uiMode, g_NativeTime(), notBefore) &&
+                !g_BlockingState(g_BlockingReason, nullptr);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+    }
+    SwitchResult Apply(void* instance, int mode) {
+        __try {
             const int uiMode = mode == 3 ? 2 : 1;
-            // Capture old device state before either global mode is changed.
-            // Generic resize notifications alone do not prepare menu controls.
-            stage = "menu transition begin";
-            g_BeginMenus(ui, uiMode, mode, nullptr);
-            stage = "UI mode";
-            // The native global transition passes false here: it uses the
-            // menu begin/finish pair, not generic callbacks while enumerating
-            // the live page collection. Resolution/kind still update normally.
-            g_SetUiMode(ui, uiMode, false, nullptr);
-            stage = "input mode";
-            g_SetInputMode(instance, mode, false, nullptr);
-            if (hud) {
-                stage = "HUD refresh";
-                g_RefreshHud(hud, g_GetUiKind(ui, nullptr), nullptr);
-                hadHud = true;
-            }
-            stage = "cursor refresh";
-            g_Cursor(instance, nullptr);
-            stage = "menu transition finish";
-            g_FinishMenus(ui, uiMode, mode, nullptr);
-            return *reinterpret_cast<int*>(static_cast<unsigned char*>(instance) + g_InputModeOffset) == mode &&
-                *reinterpret_cast<int*>(static_cast<unsigned char*>(ui) + g_UiModeOffset) == uiMode;
+            // A normal false return is the native page guard rejecting this
+            // request before changing modes. Do not disable or force the UI.
+            if (!g_SwitchDevice(instance, uiMode, mode, nullptr)) return SwitchResult::Rejected;
+            void* ui = nullptr;
+            int actualInput = 0, actualUi = 0;
+            return ReadManagers(instance, ui, actualInput, actualUi) && actualInput == mode && actualUi == uiMode
+                ? SwitchResult::Applied : SwitchResult::Failed;
         }
-        __except (EXCEPTION_EXECUTE_HANDLER) {
-            char text[160]{};
-            sprintf_s(text, "Hot switch native exception at %s; code=0x%08lX", stage, GetExceptionCode());
-            Log(text);
-            return false;
-        }
+        __except (ReportException(GetExceptionInformation())) { return SwitchResult::Failed; }
     }
     void WINAPI HookUpdate(void* instance, void* methodInfo) {
-        if (g_Updating) { g_OriginalUpdate(instance, methodInfo); return; }
+        if (g_Updating || g_SwitchGuard.IsActive()) { g_OriginalUpdate(instance, methodInfo); return; }
         g_Updating = true;
-        g_OriginalUpdate(instance, methodInfo);
-        g_Updating = false;
-        if (!g_Enabled.load(std::memory_order_relaxed) || !InstallWindowMonitor()) return;
+        __try { g_OriginalUpdate(instance, methodInfo); }
+        __finally { g_Updating = false; }
+        if (!g_Enabled.load(std::memory_order_relaxed) || g_SwitchGuard.IsActive() || !InstallWindowMonitor()) return;
+        const auto now = GetTickCount64();
+        const auto token = g_Activity.Peek(now);
+        if (!token || token == g_Handled) return;
         void* ui = nullptr;
         int current = 0, uiMode = 0;
-        if (!ReadManagers(instance, ui, current, uiMode)) return;
+        if (!ReadManagers(instance, ui, current, uiMode, true)) return;
         if (g_FirstTick) {
             char text[160]{};
             sprintf_s(text, "Hot switch native UI update observed; thread=%lu; input mode=%d; UI mode=%d",
@@ -274,31 +262,41 @@ namespace {
             Log(text);
             g_FirstTick = false;
         }
-        const auto now = GetTickCount64();
-        const auto token = g_Activity.Peek(now);
-        if (!token || token == g_Handled) return;
         const int requested = DeviceActivity::NativeMode(token);
         if (current == requested && uiMode == (requested == 3 ? 2 : 1)) { g_Handled = token; return; }
-        if (now - g_LastSwitchTime < 500) return; // Preserve held input; avoid mode ping-pong.
+        const auto lastAttempt = g_LastAttemptTime.load(std::memory_order_relaxed);
+        if (now < lastAttempt || now - lastAttempt < 500) return;
+        if (!CanSwitchNow(instance, current, uiMode)) {
+            if (g_Diagnostics && g_DeferralTraces < 8) {
+                ++g_DeferralTraces;
+                Log("Hot switch deferred by native transition/deadline/blocking guard; no additional transaction");
+            }
+            return;
+        }
         g_Handled = token;
         if (!Focused()) return;
         // Cursor recentering during the native switch must not count as mouse use.
         g_IgnoreMouseUntil = now + 500;
+        g_LastAttemptTime.store(now, std::memory_order_relaxed);
         g_Updating = true;
-        bool hadHud = false;
-        const bool success = Apply(instance, ui, requested, hadHud);
+        const auto result = Apply(instance, requested);
         g_Updating = false;
-        if (!success) {
+        if (result == SwitchResult::Rejected) {
+            if (g_Diagnostics && g_RejectionTraces < 8) {
+                ++g_RejectionTraces;
+                Log("Hot switch rejected by native page guard; request consumed, feature remains enabled; no forced retry");
+            }
+            return;
+        }
+        if (result == SwitchResult::Failed) {
             Log("Hot switch native call failed or modes mismatched; feature disabled, no repeated retry");
             g_Enabled.store(false, std::memory_order_release);
             return;
         }
-        g_LastSwitchTime = now;
         char text[160]{};
-        sprintf_s(text, "Hot switch applied %d -> %d; source=%u; UI thread=%lu", current, requested,
+        sprintf_s(text, "Hot switch whole transaction applied %d -> %d; source=%u; UI thread=%lu", current, requested,
             static_cast<unsigned>(DeviceActivity::Source(token)), GetCurrentThreadId());
         Log(text);
-        TraceLayout(ui, hadHud);
     }
 }
 
@@ -307,128 +305,102 @@ void HotSwitch::Configure(Logger log, bool enabled, bool diagnostics) {
 }
 bool HotSwitch::IsEnabled() { return g_Enabled.load(std::memory_order_relaxed); }
 bool HotSwitch::IsReady() { return g_Ready.load(std::memory_order_acquire); }
-void HotSwitch::ObserveGamepad(unsigned index, const XINPUT_GAMEPAD& pad) {
-    if (IsEnabled() && g_Pads.Sample(index, pad) && Focused())
-        g_Activity.Notify(InputSource::Gamepad, GetTickCount64());
+void HotSwitch::ObserveXInput(unsigned index, const XINPUT_GAMEPAD& pad) {
+    if (IsEnabled() && g_XInputPads.Sample(index, pad)) NotifyGamepadActivity();
 }
-void HotSwitch::Disconnect(unsigned index) { g_Pads.Disconnect(index); }
+void HotSwitch::NotifyGamepadActivity() {
+    if (IsEnabled() && Focused()) g_Activity.Notify(InputSource::Gamepad, GetTickCount64());
+}
+void HotSwitch::DisconnectXInput(unsigned index) { g_XInputPads.Disconnect(index); }
 
 void HotSwitch::Prepare(Resolver resolve) {
     if (!IsEnabled() || g_Prepared) return;
     g_Prepared = true;
     g_UpdateEntry = resolve(UpdateSignature);
-    g_SetUiMode = reinterpret_cast<SetMode>(resolve(UiModeSignature));
-    g_SetInputMode = reinterpret_cast<SetMode>(resolve(InputModeSignature));
-    g_Cursor = reinterpret_cast<Update>(resolve(CursorSignature));
-    g_BeginMenus = reinterpret_cast<TransitionMenus>(resolve(BeginMenusSignature));
-    g_FinishMenus = reinterpret_cast<TransitionMenus>(resolve(FinishMenusSignature));
-    const auto sequence = static_cast<const unsigned char*>(resolve(SwitchSequenceSignature));
-    if (!g_UpdateEntry || !g_SetUiMode || !g_SetInputMode || !g_Cursor || !sequence || !g_BeginMenus || !g_FinishMenus) {
+    g_SwitchDevice = reinterpret_cast<SwitchDevice>(resolve(SwitchDeviceSignature));
+    const auto eligibility = static_cast<const unsigned char*>(resolve(EligibilitySignature));
+    if (!g_UpdateEntry || !g_SwitchDevice || !eligibility) {
         Log("Hot switch signature absent/ambiguous; feature disabled, no fallback scan");
         g_Enabled.store(false);
         return;
     }
-    // Decode fields from the verified native bodies, not fixed game RVAs.
+    // Decode and cross-check the real managers/mode fields once. The nested
+    // input setter is inspected, not resolved separately or invoked by us.
     const auto update = static_cast<const unsigned char*>(g_UpdateEntry);
-    const auto cursor = reinterpret_cast<const unsigned char*>(g_Cursor);
-    g_ManagerSlot = reinterpret_cast<void**>(const_cast<unsigned char*>(update + 0x79 +
-        *reinterpret_cast<const int*>(update + 0x75)));
+    const auto native = reinterpret_cast<const unsigned char*>(g_SwitchDevice);
+    const auto inputSetter = CallTarget(native + 0x3D1);
+    g_ManagerSlot = reinterpret_cast<void**>(const_cast<unsigned char*>(Relative(update + 0x75)));
     g_UiManagerOffset = *reinterpret_cast<const unsigned*>(update + 0x7C);
-    g_InputModeOffset = *reinterpret_cast<const unsigned*>(reinterpret_cast<const unsigned char*>(g_SetInputMode) + 0x1E);
-    g_UiModeOffset = *reinterpret_cast<const unsigned*>(reinterpret_cast<const unsigned char*>(g_SetUiMode) + 0x2E);
-    const auto uiSetter = reinterpret_cast<const unsigned char*>(g_SetUiMode);
-    // Validate the native wrapper against all three already matched entries.
-    // Its generic HUD getter requires its real MethodInfo, not a null pointer.
-    g_GetHud = reinterpret_cast<GetPage>(const_cast<unsigned char*>(CallTarget(sequence + 0x07)));
-    g_GetUiKind = reinterpret_cast<GetKind>(const_cast<unsigned char*>(CallTarget(sequence + 0x73)));
-    g_RefreshHud = reinterpret_cast<RefreshHud>(const_cast<unsigned char*>(CallTarget(sequence + 0x8A)));
-    g_HudMethodSlot = reinterpret_cast<void**>(const_cast<unsigned char*>(Relative(sequence + 0x03)));
-    // The cursor body independently references the same root and UI slot.
-    const auto cursorSlot = cursor + 0x2F + *reinterpret_cast<const int*>(cursor + 0x2B);
-    const auto cursorUi = *reinterpret_cast<const unsigned*>(cursor + 0x32);
-    if (cursorSlot != reinterpret_cast<const unsigned char*>(g_ManagerSlot) || cursorUi != g_UiManagerOffset ||
-        g_InputModeOffset != *reinterpret_cast<const unsigned*>(cursor + 0x16) ||
-        g_InputModeOffset != *reinterpret_cast<const unsigned*>(update + 0x4D) ||
-        CallTarget(sequence + 0x2E) != uiSetter ||
-        CallTarget(sequence + 0x52) != reinterpret_cast<const unsigned char*>(g_SetInputMode) ||
-        CallTarget(sequence + 0xA6) != cursor ||
-        Relative(sequence + 0x12) != reinterpret_cast<const unsigned char*>(g_ManagerSlot) ||
-        *reinterpret_cast<const unsigned*>(sequence + 0x19) != g_UiManagerOffset ||
-        !g_GetHud || !g_GetUiKind || !g_RefreshHud ||
-        CallTarget(uiSetter + 0x58) != reinterpret_cast<const unsigned char*>(g_GetUiKind) ||
-        uiSetter[0x5D] != 0x89 || uiSetter[0x5E] != 0x86 ||
-        uiSetter[0x6B] != 0x48 || uiSetter[0x6C] != 0x8B || uiSetter[0x6D] != 0x86 ||
-        uiSetter[0xC7] != 0xFF || uiSetter[0xC8] != 0x90) {
-        Log("Hot switch native field cross-check failed; feature disabled");
+    g_InputModeOffset = *reinterpret_cast<const unsigned*>(update + 0x4D);
+    g_InputBlockedOffset = *reinterpret_cast<const unsigned*>(update + 0x19);
+    g_InputSceneGateOffset = *reinterpret_cast<const unsigned*>(eligibility + 0x29);
+    g_SwitchDeadlineOffset = *reinterpret_cast<const unsigned*>(eligibility + 0xA5);
+    g_BlockingReason = *reinterpret_cast<const int*>(eligibility + 0x49);
+    g_BlockingState = reinterpret_cast<BlockingState>(const_cast<unsigned char*>(CallTarget(eligibility + 0x4D)));
+    g_NativeTime = reinterpret_cast<NativeTime>(const_cast<unsigned char*>(CallTarget(eligibility + 0xA9)));
+    if (Relative(native + 0x40) != reinterpret_cast<const unsigned char*>(g_ManagerSlot) ||
+        *reinterpret_cast<const unsigned*>(native + 0x4D) != g_UiManagerOffset ||
+        native[0x2F6] != 0x39 || native[0x2F7] != 0x86 ||
+        native[0x301] != 0x89 || native[0x302] != 0x86 ||
+        native[0x4D6] != 0x48 || native[0x4D7] != 0x8B || native[0x4D8] != 0x80 ||
+        native[0x4E2] != 0x83 || native[0x4E3] != 0xB8 ||
+        *reinterpret_cast<const unsigned*>(native + 0x4E4) != g_InputModeOffset ||
+        native[0x3CE] != 0x41 || native[0x3CF] != 0xB0 || native[0x3D0] != 0x01 ||
+        !inputSetter || inputSetter[0x1C] != 0x8B || inputSetter[0x1D] != 0x86 ||
+        *reinterpret_cast<const unsigned*>(inputSetter + 0x1E) != g_InputModeOffset ||
+        eligibility[0x27] != 0x80 || eligibility[0x28] != 0xBE || eligibility[0x48] != 0xB9 ||
+        Relative(eligibility + 0x5D) != reinterpret_cast<const unsigned char*>(g_ManagerSlot) ||
+        *reinterpret_cast<const unsigned*>(eligibility + 0x96) != g_UiManagerOffset ||
+        eligibility[0xA1] != 0xF3 || eligibility[0xA2] != 0x0F ||
+        eligibility[0xA3] != 0x10 || eligibility[0xA4] != 0xB6 ||
+        !g_BlockingState || !g_NativeTime || CallTarget(native + 0x628) !=
+            reinterpret_cast<const unsigned char*>(g_NativeTime)) {
+        Log("Hot switch whole-transaction body cross-check failed; feature disabled");
         g_Enabled.store(false);
         return;
     }
-    const auto layout = CallTarget(uiSetter + 0x50);
-    if (!layout || layout[0x88] != 0x48 || layout[0x89] != 0x89 || layout[0x8A] != 0xBE) {
-        Log("Hot switch UI layout body check failed; feature disabled");
+    g_InputManagerOffset = *reinterpret_cast<const unsigned*>(native + 0x4D9);
+    g_UiModeOffset = *reinterpret_cast<const unsigned*>(native + 0x2F8);
+    if (g_UiModeOffset != *reinterpret_cast<const unsigned*>(native + 0x303) ||
+        !g_InputBlockedOffset || g_InputBlockedOffset >= 0x1000 ||
+        !g_InputSceneGateOffset || g_InputSceneGateOffset >= 0x1000 ||
+        !g_SwitchDeadlineOffset || g_SwitchDeadlineOffset >= 0x1000 || g_SwitchDeadlineOffset % sizeof(float) ||
+        g_BlockingReason <= 0 ||
+        !g_InputModeOffset || g_InputModeOffset >= 0x1000 || g_InputModeOffset % sizeof(int) ||
+        !g_UiModeOffset || g_UiModeOffset >= 0x1000 || g_UiModeOffset % sizeof(int) ||
+        !g_UiManagerOffset || g_UiManagerOffset >= 0x40000 || g_UiManagerOffset % sizeof(void*) ||
+        !g_InputManagerOffset || g_InputManagerOffset >= 0x40000 || g_InputManagerOffset % sizeof(void*)) {
+        Log("Hot switch manager/mode field check failed; feature disabled");
         g_Enabled.store(false);
         return;
     }
-    g_UiKindOffset = *reinterpret_cast<const unsigned*>(uiSetter + 0x5F);
-    g_PagesOffset = *reinterpret_cast<const unsigned*>(uiSetter + 0x6E);
-    g_PageRefreshOffset = *reinterpret_cast<const unsigned*>(uiSetter + 0xC9);
-    g_ReferenceOffset = *reinterpret_cast<const unsigned*>(layout + 0x8B);
-    const auto begin = reinterpret_cast<const unsigned char*>(g_BeginMenus);
-    const auto finish = reinterpret_cast<const unsigned char*>(g_FinishMenus);
-    const auto preparePage = CallTarget(begin + 0x8F);
-    if (!preparePage || !CallTarget(begin + 0x4A) || CallTarget(begin + 0x4A) != CallTarget(finish + 0x4A) ||
-        *reinterpret_cast<const unsigned*>(begin + 0xFB) != g_PagesOffset ||
-        *reinterpret_cast<const unsigned*>(finish + 0x115) != g_PagesOffset ||
-        Relative(preparePage + 0x2B) != reinterpret_cast<const unsigned char*>(g_ManagerSlot) ||
-        *reinterpret_cast<const unsigned*>(preparePage + 0x51) != g_UiModeOffset ||
-        *reinterpret_cast<const unsigned*>(preparePage + 0x57) != g_InputModeOffset ||
-        preparePage[0x1F] != 0x83 || preparePage[0x20] != 0xBF ||
-        preparePage[0x63] != 0x80 || preparePage[0x64] != 0xBF ||
-        preparePage[0x6A] != 0x48 || preparePage[0x6B] != 0x8B || preparePage[0x6C] != 0x87 ||
-        preparePage[0x95] != 0x89 || preparePage[0x96] != 0x68 ||
-        preparePage[0x98] != 0x89 || preparePage[0x99] != 0x70 ||
-        preparePage[0xA2] != 0x89 || preparePage[0xA3] != 0x58 ||
-        preparePage[0xA5] != 0x44 || preparePage[0xA6] != 0x89 || preparePage[0xA7] != 0x70) {
-        Log("Hot switch native menu transition cross-check failed; feature disabled");
-        g_Enabled.store(false);
-        return;
-    }
-    // Only used by the bounded, read-only event diagnostic; never written.
-    g_PageReadyOffset = *reinterpret_cast<const unsigned*>(preparePage + 0x21);
-    g_PageDirtyOffset = *reinterpret_cast<const unsigned*>(preparePage + 0x65);
-    g_PageModeStateOffset = *reinterpret_cast<const unsigned*>(preparePage + 0x6D);
-    g_PreviousUiOffset = preparePage[0x97]; g_PreviousInputOffset = preparePage[0x9A];
-    g_TargetUiOffset = preparePage[0xA4]; g_TargetInputOffset = preparePage[0xA8];
-    // The input manager is the receiver supplied by its own native update;
-    // no additional root-table offset or setting-page instance is guessed.
     const auto base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
     char text[256]{};
-    sprintf_s(text, "Hot switch entries resolved once; update=0x%llX; UI setter=0x%llX; input setter=0x%llX; cursor=0x%llX",
+    sprintf_s(text, "Hot switch entries resolved once; update=0x%llX; whole transaction=0x%llX; no split refresh calls",
         static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(g_UpdateEntry) - base),
-        static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(g_SetUiMode) - base),
-        static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(g_SetInputMode) - base),
-        static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(g_Cursor) - base));
-    Log(text);
-    sprintf_s(text, "Hot switch native menu transition resolved; begin=0x%llX; finish=0x%llX; device changes only",
-        static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(g_BeginMenus) - base),
-        static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(g_FinishMenus) - base));
-    Log(text);
-    sprintf_s(text, "Hot switch native HUD chain resolved; getter=0x%llX; UI kind=0x%llX; HUD refresh=0x%llX",
-        static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(g_GetHud) - base),
-        static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(g_GetUiKind) - base),
-        static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(g_RefreshHud) - base));
+        static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(g_SwitchDevice) - base));
     Log(text);
 }
 void HotSwitch::Install() {
     if (!IsEnabled() || !g_Prepared || g_InstallAttempted) return;
     g_InstallAttempted = true;
-    if (MH_CreateHook(g_UpdateEntry, reinterpret_cast<void*>(&HookUpdate),
-        reinterpret_cast<void**>(&g_OriginalUpdate)) != MH_OK || MH_EnableHook(g_UpdateEntry) != MH_OK) {
-        if (g_OriginalUpdate) MH_RemoveHook(g_UpdateEntry);
-        Log("Hot switch UI-update hook failed; feature disabled");
+    if (MH_CreateHook(reinterpret_cast<void*>(g_SwitchDevice), reinterpret_cast<void*>(&HookSwitchDevice),
+        reinterpret_cast<void**>(&g_OriginalSwitchDevice)) != MH_OK ||
+        MH_CreateHook(g_UpdateEntry, reinterpret_cast<void*>(&HookUpdate),
+            reinterpret_cast<void**>(&g_OriginalUpdate)) != MH_OK ||
+        MH_EnableHook(reinterpret_cast<void*>(g_SwitchDevice)) != MH_OK || MH_EnableHook(g_UpdateEntry) != MH_OK) {
+        if (g_OriginalUpdate) {
+            MH_DisableHook(g_UpdateEntry);
+            MH_RemoveHook(g_UpdateEntry);
+        }
+        if (g_OriginalSwitchDevice) {
+            MH_DisableHook(reinterpret_cast<void*>(g_SwitchDevice));
+            MH_RemoveHook(reinterpret_cast<void*>(g_SwitchDevice));
+        }
+        Log("Hot switch transaction/update hooks failed; feature disabled");
         g_Enabled.store(false);
         return;
     }
     g_Ready.store(true, std::memory_order_release);
-    Log("Global hot switch candidate 0.1.9 ready; native menu transaction; generic live-page refresh disabled; no extra polling");
+    Log("Global hot switch trial ready; whole transaction with shared native guard/deadline; no page polling");
 }

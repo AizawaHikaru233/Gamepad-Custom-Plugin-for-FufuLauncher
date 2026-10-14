@@ -13,9 +13,11 @@ inline bool SameName(std::wstring_view a, std::wstring_view b) {
     return true;
 }
 
-// Standard XInput buttons only. Logo/back paddles are not exposed by this API.
+// Shared button roles. Touchpad uses an internal bit only on the native Sony
+// adapter; it is never treated as a real XInput button.
 class GamepadButton {
 public:
+    static constexpr WORD TouchpadMask = 0x0400;
     static GamepadButton Parse(std::wstring_view name) {
         // Config text is parsed once at startup, not in the input hook.
         const auto isSpace = [](wchar_t c) {
@@ -34,15 +36,23 @@ public:
             {L"DPadUp", XINPUT_GAMEPAD_DPAD_UP}, {L"DPadDown", XINPUT_GAMEPAD_DPAD_DOWN},
             {L"DPadLeft", XINPUT_GAMEPAD_DPAD_LEFT}, {L"DPadRight", XINPUT_GAMEPAD_DPAD_RIGHT},
             {L"Up", XINPUT_GAMEPAD_DPAD_UP}, {L"Down", XINPUT_GAMEPAD_DPAD_DOWN},
-            {L"Left", XINPUT_GAMEPAD_DPAD_LEFT}, {L"Right", XINPUT_GAMEPAD_DPAD_RIGHT}
+            {L"Left", XINPUT_GAMEPAD_DPAD_LEFT}, {L"Right", XINPUT_GAMEPAD_DPAD_RIGHT},
+            {L"Create", XINPUT_GAMEPAD_BACK}, {L"Share", XINPUT_GAMEPAD_BACK},
+            {L"Options", XINPUT_GAMEPAD_START},
+            {L"Cross", XINPUT_GAMEPAD_A}, {L"Circle", XINPUT_GAMEPAD_B},
+            {L"Square", XINPUT_GAMEPAD_X}, {L"Triangle", XINPUT_GAMEPAD_Y},
+            {L"L1", XINPUT_GAMEPAD_LEFT_SHOULDER}, {L"R1", XINPUT_GAMEPAD_RIGHT_SHOULDER},
+            {L"L3", XINPUT_GAMEPAD_LEFT_THUMB}, {L"R3", XINPUT_GAMEPAD_RIGHT_THUMB},
+            {L"Touchpad", TouchpadMask}
         };
         for (const auto& button : buttons) if (SameName(name, button.name))
             return GamepadButton(button.mask, 0);
-        if (SameName(name, L"LT")) return GamepadButton(0, 1);
-        if (SameName(name, L"RT")) return GamepadButton(0, 2);
+        if (SameName(name, L"LT") || SameName(name, L"L2")) return GamepadButton(0, 1);
+        if (SameName(name, L"RT") || SameName(name, L"R2")) return GamepadButton(0, 2);
         return GamepadButton(0, 0); // None or invalid: no silent default binding.
     }
     bool IsValid() const { return mask_ || trigger_; }
+    bool IsNativeOnly() const { return mask_ == TouchpadMask; }
     bool SameBinding(const GamepadButton& other) const {
         return mask_ == other.mask_ && trigger_ == other.trigger_;
     }

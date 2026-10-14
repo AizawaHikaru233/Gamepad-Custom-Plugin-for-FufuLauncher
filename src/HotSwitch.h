@@ -10,6 +10,7 @@ namespace HotSwitch {
     void Install(); // Worker, after main-plugin hooks finish initialization.
     bool IsEnabled();
     bool IsReady();
-    void ObserveGamepad(unsigned index, const XINPUT_GAMEPAD& pad); // Existing input mutex held.
-    void Disconnect(unsigned index);
+    void ObserveXInput(unsigned index, const XINPUT_GAMEPAD& pad); // Existing input mutex held.
+    void NotifyGamepadActivity(); // Other verified native controller adapters.
+    void DisconnectXInput(unsigned index);
 }
