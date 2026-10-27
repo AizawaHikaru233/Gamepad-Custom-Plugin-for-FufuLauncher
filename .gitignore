@@ -2,8 +2,10 @@
 .tools/
 bin/
 obj/
+dist/
+.ci-dependencies/
 docs/
-tests/
+/tests/
 *.user
 *.log
 __pycache__/

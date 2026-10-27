@@ -21,6 +21,7 @@
     <UnlockerIslandRoot Condition="'$(UnlockerIslandRoot)'==''">$(MSBuildProjectDirectory)\..\FufuLauncher.UnlockerIsland</UnlockerIslandRoot>
     <OutDir>$(MSBuildProjectDirectory)\bin\$(Platform)\$(Configuration)\</OutDir>
     <IntDir>$(MSBuildProjectDirectory)\obj\$(Platform)\$(Configuration)\</IntDir>
+    <PluginBuildConfig Condition="'$(PluginBuildConfig)'==''">$(MSBuildProjectDirectory)\config.ini</PluginBuildConfig>
     <TargetName>GamepadCustomPlugin</TargetName>
   </PropertyGroup>
   <ItemDefinitionGroup>
@@ -71,7 +72,10 @@
     <ClInclude Include="src\LiveConfig.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ItemGroup Condition="'$(PluginVersionResource)'!=''">
+    <ResourceCompile Include="$(PluginVersionResource)" />
+  </ItemGroup>
   <Target Name="CopyPluginConfig" AfterTargets="Build">
-    <Copy SourceFiles="$(MSBuildProjectDirectory)\config.ini" DestinationFolder="$(OutDir)" />
+    <Copy SourceFiles="$(PluginBuildConfig)" DestinationFiles="$(OutDir)config.ini" />
   </Target>
 </Project>

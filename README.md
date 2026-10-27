@@ -75,7 +75,7 @@ DualSense 名称也可用于配置，不区分大小写。`X` 仍表示 Xbox X /
 
 工程文件为 `GamepadCustomPlugin.vcxproj`。`src/XInputBackend.cpp/.h` 负责 Xbox 及虚拟 Xbox 的 XInput 接入，`src/DualSenseBackend.cpp/.h` 负责原生 DualSense 驱动接入，`src/DualSenseHidBackend.cpp/.h` 负责 PS5 的 Windows HID 报告副本及解码接入。`DualSenseState.h` 负责通用状态转换，`DualSenseHidState.h` 负责解码数据与按键路由之间的转换。入口、配置、地图、灵敏度与按键路由使用通用文件名。
 
-需要 Windows、Visual Studio 2026 C++ 构建工具、Windows SDK、`v145` 工具集，以及相邻的 `FufuLauncher.UnlockerIsland` 源码。只读取其 Patterns 定义和 MinHook 库，不重新编译或修改主插件。
+需要 Windows、PowerShell 7、Visual Studio 2026 C++ 构建工具、Windows SDK、`v145` 工具集，以及相邻的 `FufuLauncher.UnlockerIsland` 源码。通过 `vswhere` 查找 MSBuild，只读取主插件的 Patterns 定义和 MinHook 库，不重新编译或修改主插件。
 
 在源码目录双击 `publish.cmd`，或运行：
 
@@ -83,7 +83,17 @@ DualSense 名称也可用于配置，不区分大小写。`X` 仍表示 Xbox X /
 .\publish.ps1
 ```
 
-构建通过后，发布包生成到 `bin/publish/GamepadCustomPlugin-<版本号>.zip`，版本号取自 `config.ini` 的 `Version`。构建及发布流程不依赖测试目录，也不运行自动化测试。包内仅有 DLL 和默认配置，不包含诊断配置、日志、测试程序或备份；使用说明、许可证和第三方声明保留在开源仓库。仅编译请运行 `build.cmd` 或 `build.ps1`。完整构建指引见源码目录的 `BUILDING.md`。
+此命令仅在本地构建、压缩、校验和打包，不上传 GitHub 或商城。包生成到 `dist/GamepadCustomPlugin-<版本号>.zip`，ZIP 根目录只有 `GamepadCustomPlugin.dll` 和仓库默认 `config.ini`。DLL 使用官方 UPX 5.2.0 的 `--best --ultra-brute` 压缩，下载附件先核对固定 SHA256，再执行完整性测试、解压与 x64 PE/版本检查、独立非游戏宿主加载检查并确认体积减小。解压后的 DLL 不要求与原文件哈希相同。此检查不代表游戏内功能验收。
+
+源码基础版本为 `1.1.0`，`config.ini` 与 `store/metadata.json` 必须一致。`-Version 1.2.3` 可指定本次产物版本；只生成 DLL 版本资源、配置和商城信息，不回写源码，不自动提交或递增版本。DLL 的 FileVersion / ProductVersion 文本均为三段；PE 固定版本结构保留的第四个 WORD 恒为零，不参与版本名、tag 或包名。商城 ID 保留 `XboxGamepadPlugin`，安装脚本仍只调用 `install.download_plugin("XboxGamepadPlugin")`。
+
+输出目录还包含商城信息、安装脚本、SHA256 和压缩报告，均在 ZIP 外。脚本拒绝覆盖非空输出目录或复用已有压缩目录；再次构建时指定新的 `-OutputDirectory` 与 `-CompressionDirectory`。不读取本地部署配置，也不修改任何用户安装目录。仅编译请运行 `build.cmd` 或 `build.ps1`。完整指引见 [BUILDING.md](BUILDING.md)。
+
+### GitHub Actions
+
+- 发布：进入 **Actions → Build and release → Run workflow**，选择默认分支 `master`，填写必需的 `version`，例如 `1.2.3`。
+- 校验全部通过后，以本次构建提交创建 `v1.2.3`，Release 标题为 `GamepadCustomPlugin 1.2.3`；先创建草稿，只上传成品 ZIP，确认上传状态、大小和 SHA256 后公开。商城信息、脚本、哈希和报告仅留在 Actions artifact 中，不自动发布到商城。
+- 已公开的同版本直接跳过；发现同版本未完成草稿则停止，需维护者手动处理。已有 tag 若指向其他提交也停止。
 
 ## 许可
 
