@@ -18,6 +18,8 @@
 
 长期更改基础版本时同步修改 `config.ini`、`store/metadata.json` 和 `README.md`。构建时通过 `-Version x.y.z` 临时指定本次产物版本，省略时使用一致的源码基础版本。版本资源和配置写入中间目录，再复制到构建输出，不修改 `src/` 或根目录配置。打包名为 `GamepadCustomPlugin-x.y.z.zip`，商城信息与包内配置使用同一版本；不自动增加第四段、时间戳或提交哈希。
 
+商城的 `name`、`description`、`developer` 展示文本可以与 `config.ini` 不同；调整商城文案无需同步改插件设置页。技术字段仍严格校验：商城 ID、DLL 文件名、基础版本及 ZIP 文件名。生成产物会保留商城原有文案，只替换本次版本和对应包名。
+
 `MapButton` 的 `Type = enum` 和 `OptionsSource = gamepad` 是启动器通用候选协议。原生插件只读取 Value，因此不影响原来的别名与热重载；升级旧配置时保留个人 Value，只更新这两个元数据字段。不要把手柄按键改成保存键盘虚拟键码的 Type=key。
 
 ## 手动构建发布包

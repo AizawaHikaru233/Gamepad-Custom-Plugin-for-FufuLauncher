@@ -51,12 +51,12 @@ function Get-ReleaseContext([string]$ProjectRoot, [string]$Version = '') {
     $metadata = Get-Content -LiteralPath (Join-Path $ProjectRoot 'store/metadata.json') -Raw -Encoding utf8 | ConvertFrom-Json
     Assert-ReleaseVersion $metadata.version
     $text = [IO.File]::ReadAllText((Join-Path $ProjectRoot 'config.ini'))
-    $ini = Assert-PluginConfig $text $metadata.version
+    Assert-PluginConfig $text $metadata.version | Out-Null
+    # Store display text is maintained independently of the plugin settings UI.
+    # Only release identity, base version and filenames must agree.
     if ($metadata.id -cne 'XboxGamepadPlugin' -or $metadata.dll_file_name -cne 'GamepadCustomPlugin.dll' -or
-        $metadata.archive_file_name -cne "GamepadCustomPlugin-$($metadata.version).zip" -or
-        $metadata.name -cne $ini.General.Name -or $metadata.developer -cne $ini.General.Developer -or
-        $metadata.description -cne $ini.General.Description) {
-        throw 'Source config and store metadata identity or base version differ.'
+        $metadata.archive_file_name -cne "GamepadCustomPlugin-$($metadata.version).zip") {
+        throw 'Store plugin ID, DLL filename or base archive filename differs.'
     }
     if ($Version -ceq '') { $Version = [string]$metadata.version }
     Assert-ReleaseVersion $Version

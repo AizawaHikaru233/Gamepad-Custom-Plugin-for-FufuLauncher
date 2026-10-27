@@ -31,7 +31,7 @@ jobs:
       run:
         shell: pwsh
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           persist-credentials: false
 
@@ -45,8 +45,11 @@ jobs:
           "version=$($release.Version)" >> $env:GITHUB_OUTPUT
           "tag=$($release.Tag)" >> $env:GITHUB_OUTPUT
 
+      - name: Test source and generated version metadata
+        run: ./scripts/tests/release-context.test.ps1
+
       - name: Fetch pinned build-only Patterns and MinHook dependency
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: ChiyukiKazama/FufuLauncher.UnlockerIsland
           ref: 7b0fce943feb0307bae38fb1c3eefa36cae12c86
@@ -82,7 +85,7 @@ jobs:
         run: node --test scripts/tests/publish-release.test.cjs
 
       - name: Retain completed package and store artifacts for 14 days
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: release-${{ steps.version.outputs.tag }}
           path: dist/*
@@ -100,18 +103,18 @@ jobs:
       group: gamepad-publication
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: release-${{ needs.build.outputs.tag }}
           path: dist
 
       - name: Create draft, upload and verify ZIP, then publish
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         env:
           RELEASE_VERSION: ${{ needs.build.outputs.version }}
         with:
