@@ -84,7 +84,6 @@ test('unfinished draft blocks even when another matching release is public', asy
   assert.deepEqual(f.calls, []);
 });
 for (const [label, options, pattern] of [
-  ['wrong existing tag', { tagSha: 'b'.repeat(40) }, /different commit/],
   ['API failure', { apiFailure: true }, /API unavailable/],
   ['tag lookup forbidden', { lookupStatus: 403 }, /not found/],
   ['upload failure', { uploadFailure: true }, /upload failed/],
@@ -97,11 +96,14 @@ for (const [label, options, pattern] of [
     assert.ok(!f.calls.some(c => c[0] === 'publish'));
   });
 }
-test('annotated tag pointing at the built commit is accepted', async t => {
-  const f = fixture(t, { tagSha: 'c'.repeat(40), annotated: true });
-  assert.equal(await f.run(), 'published');
-  assert.ok(!f.calls.some(c => c[0] === 'tag'));
-});
+for (const annotated of [false, true]) {
+  test(`existing ${annotated ? 'annotated' : 'lightweight'} tag pointing at an older commit is reused`, async t => {
+    const f = fixture(t, { tagSha: 'c'.repeat(40), targetSha: 'b'.repeat(40), annotated });
+    assert.equal(await f.run(), 'published');
+    assert.ok(!f.calls.some(c => c[0] === 'tag'));
+    assert.equal(f.calls.find(c => c[0] === 'draft')[1].target_commitish, f.sha);
+  });
+}
 test('artifact corruption fails before any GitHub mutation', async t => {
   const f = fixture(t);
   fs.appendFileSync(path.join(f.directory, f.name), 'corruption');

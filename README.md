@@ -92,8 +92,8 @@ DualSense 名称也可用于配置，不区分大小写。`X` 仍表示 Xbox X /
 ### GitHub Actions
 
 - 发布：进入 **Actions → Build and release → Run workflow**，选择默认分支 `master`，填写必需的 `version`，例如 `1.2.3`。
-- 校验全部通过后，以本次构建提交创建 `v1.2.3`，Release 标题为 `GamepadCustomPlugin 1.2.3`；先创建草稿，只上传成品 ZIP，确认上传状态、大小和 SHA256 后公开。商城信息、脚本、哈希和报告仅留在 Actions artifact 中，不自动发布到商城。
-- 已公开的同版本直接跳过；发现同版本未完成草稿则停止，需维护者手动处理。已有 tag 若指向其他提交也停止。
+- 校验全部通过后，创建或复用 `v1.2.3`，Release 标题为 `GamepadCustomPlugin 1.2.3`；先创建草稿，只上传本次构建的成品 ZIP，确认上传状态、大小和 SHA256 后公开。商城信息、脚本、哈希和报告仅留在 Actions artifact 中，不自动发布到商城。
+- 已公开的同版本直接跳过；发现同版本未完成草稿则停止，需维护者手动处理。已有 tag 即使指向其他提交也会直接复用，保留原指向；只有 tag 不存在时才以本次构建提交创建。复用旧 tag 时，GitHub 自动生成的源码归档对应原 tag，ZIP 对应本次构建提交；发布前仍会确认 tag 的目标提交未发生变化。
 
 ## 许可
 

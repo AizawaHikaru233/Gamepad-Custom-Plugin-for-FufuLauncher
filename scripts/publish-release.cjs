@@ -37,6 +37,7 @@ module.exports = async function publishRelease({ github, context, core, director
   if (matches.length) { core.info(`${tag} is already public; skipping without changing its assets.`); return 'skipped'; }
 
   let ref;
+  let tagCommitSha = context.sha;
   try { ref = (await github.rest.git.getRef({ owner, repo, ref: `tags/${tag}` })).data; }
   catch (error) { if (error.status !== 404) throw error; }
   if (ref) {
@@ -44,7 +45,9 @@ module.exports = async function publishRelease({ github, context, core, director
     for (let depth = 0; object.type === 'tag' && depth < 10; depth++) {
       object = (await github.rest.git.getTag({ owner, repo, tag_sha: object.sha })).data.object;
     }
-    if (object.type !== 'commit' || object.sha !== context.sha) throw new Error(`Existing tag ${tag} points to a different commit.`);
+    if (object.type !== 'commit') throw new Error(`Existing tag ${tag} does not resolve to a commit.`);
+    tagCommitSha = object.sha;
+    core.info(`Reusing existing tag ${tag} at ${tagCommitSha}; ZIP built from ${context.sha}.`);
   } else {
     await github.rest.git.createRef({ owner, repo, ref: `refs/tags/${tag}`, sha: context.sha });
   }
@@ -58,14 +61,14 @@ module.exports = async function publishRelease({ github, context, core, director
       asset.digest !== `sha256:${hashes.archive_sha256}`) throw new Error('Uploaded ZIP identity, size or SHA256 differs; draft retained.');
   const assets = await github.paginate(github.rest.repos.listReleaseAssets, { owner, repo, release_id: draft.id, per_page: 100 });
   if (assets.length !== 1 || assets[0].id !== asset.id) throw new Error('Unexpected draft attachments; draft retained.');
-  // Recheck the tag immediately before publication; never move an existing tag.
+  // Recheck the original tag target before publication; reused tags may predate this build.
   const current = (await github.rest.git.getRef({ owner, repo, ref: `tags/${tag}` })).data.object;
   let target = current;
   for (let depth = 0; target.type === 'tag' && depth < 10; depth++) {
     target = (await github.rest.git.getTag({ owner, repo, tag_sha: target.sha })).data.object;
   }
-  if (target.type !== 'commit' || target.sha !== context.sha) throw new Error('Release tag changed; draft retained.');
+  if (target.type !== 'commit' || target.sha !== tagCommitSha) throw new Error('Release tag changed; draft retained.');
   await github.rest.repos.updateRelease({ owner, repo, release_id: draft.id, draft: false });
-  core.info(`Published ${tag} from ${context.sha}, with ${name} as the only attachment.`);
+  core.info(`Published ${tag} at ${tagCommitSha}, with ${name} built from ${context.sha} as the only attachment.`);
   return 'published';
 };
